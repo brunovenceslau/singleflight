@@ -11,6 +11,7 @@ package singleflight_test
 import (
 	"errors"
 	"testing"
+	"testing/synctest"
 
 	"github.com/brunomvsouza/singleflight"
 )
@@ -48,57 +49,61 @@ func TestGroup_Do(t *testing.T) {
 
 func TestGroup_DoChan(t *testing.T) {
 	t.Run("single call", func(t *testing.T) {
-		var g singleflight.Group[string, int]
-		ch := g.DoChan("key", func() (int, error) {
-			return 42, nil
-		})
+		synctest.Test(t, func(t *testing.T) {
+			var g singleflight.Group[string, int]
+			ch := g.DoChan("key", func() (int, error) {
+				return 42, nil
+			})
 
-		res := <-ch
-		if got, want := res.Val, 42; got != want {
-			t.Errorf("DoChan = %v; want %v", got, want)
-		}
-		if res.Err != nil {
-			t.Errorf("DoChan error = %v", res.Err)
-		}
-		if res.Shared {
-			t.Errorf("DoChan shared = true; want false")
-		}
+			res := <-ch
+			if got, want := res.Val, 42; got != want {
+				t.Errorf("DoChan = %v; want %v", got, want)
+			}
+			if res.Err != nil {
+				t.Errorf("DoChan error = %v", res.Err)
+			}
+			if res.Shared {
+				t.Errorf("DoChan shared = true; want false")
+			}
+		})
 	})
 
 	t.Run("concurrent calls", func(t *testing.T) {
-		var g singleflight.Group[string, int]
-		block := make(chan struct{})
-		unblock := make(chan struct{})
+		synctest.Test(t, func(t *testing.T) {
+			var g singleflight.Group[string, int]
+			unblock := make(chan struct{})
 
-		ch1 := g.DoChan("key", func() (int, error) {
-			close(block)
-			<-unblock
-			return 42, nil
+			ch1 := g.DoChan("key", func() (int, error) {
+				<-unblock
+				return 42, nil
+			})
+
+			// Wait until the first call is durably blocked inside fn before
+			// issuing the duplicate, so the suppression is deterministic.
+			synctest.Wait()
+
+			ch2 := g.DoChan("key", func() (int, error) {
+				t.Error("second call should not be executed")
+				return 0, nil
+			})
+
+			close(unblock)
+
+			res1 := <-ch1
+			if got, want := res1.Val, 42; got != want {
+				t.Errorf("first DoChan = %v; want %v", got, want)
+			}
+			if !res1.Shared {
+				t.Errorf("first DoChan shared = false; want true")
+			}
+
+			res2 := <-ch2
+			if got, want := res2.Val, 42; got != want {
+				t.Errorf("second DoChan = %v; want %v", got, want)
+			}
+			if !res2.Shared {
+				t.Errorf("second DoChan shared = false; want true")
+			}
 		})
-
-		<-block
-
-		ch2 := g.DoChan("key", func() (int, error) {
-			t.Error("second call should not be executed")
-			return 0, nil
-		})
-
-		close(unblock)
-
-		res1 := <-ch1
-		if got, want := res1.Val, 42; got != want {
-			t.Errorf("first DoChan = %v; want %v", got, want)
-		}
-		if !res1.Shared {
-			t.Errorf("first DoChan shared = false; want true")
-		}
-
-		res2 := <-ch2
-		if got, want := res2.Val, 42; got != want {
-			t.Errorf("second DoChan = %v; want %v", got, want)
-		}
-		if !res2.Shared {
-			t.Errorf("second DoChan shared = false; want true")
-		}
 	})
 }
