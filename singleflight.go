@@ -45,6 +45,11 @@ func (g *Group[K, V]) Do(key K, fn func() (V, error)) (v V, err error, shared bo
 		return fn()
 	})
 
+	// Load-bearing guard: when fn produces a value (even a typed nil like
+	// (*int)(nil) or a zero int), upstream boxes it into a non-nil any, so the
+	// assertion runs and is safe. result is only nil when nothing was produced,
+	// in which case v must stay V's zero value. Do not "simplify" to an
+	// unconditional result.(V) — it would panic on the nil case.
 	if result != nil {
 		v = result.(V)
 	}
@@ -56,6 +61,11 @@ func (g *Group[K, V]) Do(key K, fn func() (V, error)) (v V, err error, shared bo
 // results when they are ready.
 //
 // The returned channel will not be closed.
+//
+// Each call starts one extra goroutine to translate the upstream result into a
+// typed Result[V]; prefer Do when a channel is not needed. As with the upstream
+// package, a panic in fn is re-raised on a dedicated goroutine and crashes the
+// process — it cannot be recovered by the caller.
 func (g *Group[K, V]) DoChan(key K, fn func() (V, error)) <-chan Result[V] {
 	ch := make(chan Result[V], 1)
 
@@ -83,6 +93,8 @@ func (g *Group[K, V]) convertDoChanResult(src <-chan singleflight.Result, dst ch
 		Shared: srcResult.Shared,
 	}
 
+	// Same load-bearing guard as Do: only assert when upstream actually produced
+	// a value, otherwise leave result.Val as V's zero value.
 	if srcResult.Val != nil {
 		result.Val = srcResult.Val.(V)
 	}
