@@ -1,4 +1,4 @@
-module github.com/brunomvsouza/singleflight
+module pkg.venceslau.dev/singleflight
 
 go 1.25.0
 

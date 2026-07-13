@@ -1,6 +1,6 @@
 # Singleflight with Generics!
 
-[![GoDoc](https://pkg.go.dev/badge/github.com/brunomvsouza/singleflight)](https://pkg.go.dev/github.com/brunomvsouza/singleflight)
+[![GoDoc](https://pkg.go.dev/badge/pkg.venceslau.dev/singleflight)](https://pkg.go.dev/pkg.venceslau.dev/singleflight)
 
 > Package singleflight provides a duplicate function call suppression mechanism.
 

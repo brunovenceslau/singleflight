@@ -3,7 +3,7 @@ package singleflight_test
 import (
 	"fmt"
 
-	"github.com/brunomvsouza/singleflight"
+	"pkg.venceslau.dev/singleflight"
 )
 
 func ExampleGroup_Do() {
