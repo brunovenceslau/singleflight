@@ -77,7 +77,7 @@ jobs:
         uses: vladopajic/go-test-coverage@a93b868a4cbcbf18dc3781650fad241f0020e609 # v2
         with:
           profile: cover.out
-          local-prefix: github.com/brunomvsouza/singleflight
+          local-prefix: pkg.venceslau.dev/singleflight
           threshold-file: 70
           threshold-package: 70
           threshold-total: 93

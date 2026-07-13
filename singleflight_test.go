@@ -15,7 +15,7 @@ import (
 	"testing"
 	"testing/synctest"
 
-	"github.com/brunomvsouza/singleflight"
+	"pkg.venceslau.dev/singleflight"
 	upstream "golang.org/x/sync/singleflight"
 )
 
