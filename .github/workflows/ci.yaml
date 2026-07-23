@@ -74,7 +74,7 @@ jobs:
         run: go test ./... -v -race -coverprofile=./cover.out
 
       - name: Check Test Coverage
-        uses: vladopajic/go-test-coverage@a93b868a4cbcbf18dc3781650fad241f0020e609 # v2
+        uses: vladopajic/go-test-coverage@5f3508324fc185e82048a2861f8bdd3d83db133b # v2
         with:
           profile: cover.out
           local-prefix: pkg.venceslau.dev/singleflight
