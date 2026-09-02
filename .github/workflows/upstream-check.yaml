@@ -1,0 +1,38 @@
+name: Upstream check
+
+# Weekly alarm for R2/R3: fails when golang.org/x/sync has published a
+# version newer than what this repo is pinned to and tagged at. This repo's
+# tags are meant to track the upstream x/sync version (README "Updates &
+# Versioning"), and the generic wrapper must mirror any upstream API change;
+# a failing scheduled run is GitHub's own notification to the repo owner
+# that catch-up work is needed. See .github/scripts/check-upstream.sh for
+# the exact comparisons and the fail-closed rules.
+#
+# Caveat: GitHub disables scheduled workflows after 60 days of repository
+# inactivity. If the alarm silently stops firing, re-enable it from the
+# Actions tab (Actions -> Upstream check -> "Enable workflow").
+
+on:
+  schedule:
+    - cron: '0 9 * * 1' # Mondays at 09:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check upstream version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          check-latest: true
+
+      - name: Check upstream golang.org/x/sync version
+        run: .github/scripts/check-upstream.sh
