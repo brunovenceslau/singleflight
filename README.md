@@ -87,4 +87,5 @@ For runnable, tested examples see [examples_test.go](examples_test.go).
 
 - This package will be kept in sync with the original `golang.org/x/sync/singleflight` package until it adds native generic support.
 - Version tags will align with the original package's versioning.
+- A weekly GitHub Actions check fails when upstream publishes a version newer than the `go.mod` pin or the newest repo tag, so drift does not go unnoticed.
 - **If you notice an update before I do, please open an issue or submit a pull request**.
