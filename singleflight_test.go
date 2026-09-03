@@ -15,8 +15,8 @@ import (
 	"testing"
 	"testing/synctest"
 
-	"pkg.venceslau.dev/singleflight"
 	upstream "golang.org/x/sync/singleflight"
+	"pkg.venceslau.dev/singleflight"
 )
 
 // cacheKey exercises the K ~string constraint with a named string type rather
