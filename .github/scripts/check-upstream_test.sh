@@ -743,7 +743,8 @@ run_case "inherited GIT_DIR cannot forge the tag verdict" \
   "false" "" "false" "" "false" "" "" \
   "" "" "v9.9.9" \
   "" "" \
-  "v9.9.9"
+  "v9.9.9" "false" \
+  "GIT_DIR"
 
 # The same forgery by the other route. GIT_WORK_TREE does not swap the tag
 # store directly - it moves what `git rev-parse --show-toplevel` reports,
@@ -790,6 +791,20 @@ run_case "xpg_echo cannot split the plain stderr message either" \
   "" "" "" \
   "" "" \
   "" "true"
+
+# The hijack against that same branch, which both cases above miss because
+# they run with GITHUB_ACTIONS set. With the function in place and a bare
+# printf here, the plain-stderr message is replaced wholesale by a forged
+# annotation: the reason disappears and a "::"-prefixed line appears where
+# this branch must never produce one.
+run_case "an exported printf function cannot hijack the plain stderr message" \
+  "v0.23.0" "v0.22.0" "v0.22.0" 1 \
+  "ERROR: Upstream golang.org/x/sync has moved to v0.23.0;go.mod pins golang.org/x/sync@v0.22.0;newest repo tag is v0.22.0" "unset" "none" \
+  "false" "" "false" "" "false" "" "" \
+  "" "" "FORGED-BY-EXPORTED-FUNCTION" \
+  "" "" \
+  "" "false" \
+  "GIT_DIR" "true"
 
 # An exported shell function named printf, imported by bash from
 # BASH_FUNC_printf%% in the environment, answers every call with a forged

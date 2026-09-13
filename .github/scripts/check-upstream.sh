@@ -61,6 +61,18 @@ log_error() {
     # the whole forgery this escaping exists to prevent - and, in the
     # comparisons further down, the values the verdict is computed from.
     # `command` also outranks PATH here, since it prefers the builtin.
+    #
+    # What that buys is narrower than it looks, so read the boundary
+    # plainly: this script is hardened against the data it reads - go
+    # list's stderr, tag names, version strings - not against the
+    # environment it runs in. git, sort, head, tail, cat and mktemp below
+    # are bare names on purpose. printf is a shell builtin, so `command
+    # printf` closes both the function hijack and a PATH plant with no
+    # residue; `command git` would close only the function and leave the
+    # PATH door just as open, encoding a promise the code cannot keep.
+    # BASH_ENV, meanwhile, runs arbitrary code in this very shell before
+    # line 1, which caps any environment hardening at zero - and whoever
+    # can set it can already rewrite the workflow file that runs this.
     command printf '::error::%s\n' "${msg}"
   else
     command printf 'ERROR: %s\n' "${msg}" >&2
