@@ -15,7 +15,7 @@ go test ./... -race -coverprofile=cover.out  # tests with coverage (CI enforces 
 golangci-lint run                            # lint (CI pins v2.13.2)
 ```
 
-Requires Go 1.25+ (`go.mod` declares `go 1.25.0`). Never raise the `go` directive without the operator's explicit authorization: it would force every consumer onto a newer Go although this package uses no newer features. CI tests the last two stable Go minors (setup-go `stable` and `oldstable`; 1.27.x and 1.26.x as of 2026-09), so the declared floor is not exercised by CI; the toolchain rejects language features newer than the `go` directive and `go vet`'s stdversion analyzer flags standard-library symbols newer than it.
+Requires Go 1.26+ (`go.mod` declares `go 1.26.0`, raised in PR #23 alongside the bump to x/sync v0.23.0). Never raise the `go` directive without the operator's explicit authorization: it would force every consumer onto a newer Go although this package uses no newer features. CI's Test job runs two legs, the newest stable Go (setup-go `go-version: stable`) and the declared floor (setup-go `go-version-file: go.mod`, which resolves to exactly 1.26.0), so the version the module claims to require is exercised on every run; the toolchain rejects language features newer than the `go` directive and `go vet`'s stdversion analyzer flags standard-library symbols newer than it.
 
 ## Core design constraint
 

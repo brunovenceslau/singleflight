@@ -23,10 +23,45 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    # Recent runs finish in roughly 30-40 seconds per job. Ten minutes is ample
+    # headroom for a cold toolchain or module download while still capping a
+    # hung job far below the 6-hour default.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
+          # This workflow executes untrusted fork-PR code (go test, golangci-lint,
+          # govulncheck). Do not leave the job token behind in .git/config for it.
+          persist-credentials: false
+
+      # golangci-lint-action auto-detects .custom-gcl.{yml,yaml,json} in the
+      # workspace, with no input to opt in or out, and on a hit runs
+      # `golangci-lint custom`: that `go get`s the modules listed under
+      # `plugins:` and links them into a binary it then executes. On a fork PR
+      # that is arbitrary attacker code in the one job that otherwise only
+      # type-checks. This repo ships no such file, so any occurrence is hostile.
+      # Match the whole `.custom-gcl.*` family rather than just the three
+      # extensions the action honours today, and use `find` so no filename is
+      # ever expanded by the shell or interpreted as an option. `-maxdepth 1`
+      # mirrors the action's own root-only lookup: it searches the step's
+      # working directory, which is the workspace while the lint step below
+      # sets no `working-directory`. Move this search root if that ever changes,
+      # or the guard silently stops covering the directory the action reads.
+      - name: Reject golangci-lint plugin config
+        run: |
+          set -euo pipefail
+          found=$(find . -maxdepth 1 -name '.custom-gcl.*' -print)
+          if [ -n "$found" ]; then
+            echo "Refusing to lint: found golangci-lint plugin configuration:"
+            echo "$found"
+            echo "This repository intentionally ships no golangci-lint plugin"
+            echo "configuration. Such a file makes the lint job build and execute"
+            echo "third-party plugin modules, so it is rejected rather than"
+            echo "honoured. If you believe this project needs one, raise it in an"
+            echo "issue first rather than adding the file."
+            exit 1
+          fi
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -41,10 +76,12 @@ jobs:
   vuln:
     name: Vuln
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
+          persist-credentials: false
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -52,29 +89,77 @@ jobs:
           check-latest: true
 
       - name: Govulncheck
-        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        # Pinned to an exact release rather than @latest so a run is reproducible
+        # and an upstream release cannot change what CI executes without a commit.
+        # Dependabot does NOT keep this current: its gomod updater reads go.mod /
+        # go.sum (x/vuln is not a module dependency) and its github-actions
+        # updater only rewrites `uses:` references. Bump it by hand; the current
+        # release is listed at https://pkg.go.dev/golang.org/x/vuln.
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
   test:
-    name: Test
+    # Pin the display name so both legs stay identifiable in the GitHub UI as
+    # `Test (stable, ubuntu-latest)` and `Test (floor, ubuntu-latest)`, rather
+    # than being named after the setup-go inputs that `include` adds below.
+    name: Test (${{ matrix.go }}, ${{ matrix.os }})
+    timeout-minutes: 10
+    # Set here, before setup-go runs, so setup-go's own guard is armed when it
+    # parses go.mod: with GOTOOLCHAIN unset, a `toolchain` directive would take
+    # precedence over the `go` directive and silently retarget the floor leg off
+    # the declared floor. It also stops the `go` command downloading a newer
+    # toolchain, so a module that outgrows its floor fails the leg instead.
+    env:
+      GOTOOLCHAIN: local
     strategy:
       matrix:
-        go: [ 'stable', 'oldstable' ]
+        # Two legs, same cost as before:
+        #   stable - the newest released Go; catches what the newest toolchain
+        #            rejects.
+        #   floor  - the version go.mod declares; proves the module still builds
+        #            and passes on what it claims to require.
+        # This replaces `oldstable`, which exercised a minor nobody promised to
+        # support while the declared floor went untested by CI.
+        go: [ stable, floor ]
         os: [ ubuntu-latest ]
+        # Each entry matches exactly one existing combination and only adds new
+        # keys, so the matrix stays at two jobs.
+        include:
+          - go: stable
+            go-version: stable
+          - go: floor
+            go-version-file: go.mod
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
+          persist-credentials: false
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: ${{ matrix.go }}
+          # Exactly one of these is non-empty per leg. setup-go's
+          # resolveVersionInput() treats an empty input as unset, so the other one
+          # is simply ignored. For the floor leg it reads the `go` directive from
+          # go.mod (the job-level GOTOOLCHAIN=local above is what makes it read
+          # that directive rather than a `toolchain` one), and that value is an
+          # exact version, so the leg runs on precisely the declared floor rather
+          # than the newest patch of that minor.
+          go-version: ${{ matrix.go-version }}
+          go-version-file: ${{ matrix.go-version-file }}
 
       - name: Show Go version
         run: go version
 
       - name: Test
-        run: go test ./... -v -race -coverprofile=./cover.out
+        # Go's own default test timeout is 10m, exactly the job budget above, so
+        # the opaque job kill would always win. 5m keeps a clear margin and lets
+        # Go's timeout fire first, with its goroutine dump. What that buys is
+        # narrower than it looks and worth stating: a durable synctest deadlock
+        # never reaches any timeout, because synctest's own detector panics at
+        # 0.00s with a richer dump. This flag is for a block synctest does not
+        # consider durable - a mutex, a real syscall - inside or outside a
+        # bubble, which otherwise hangs in real time until the job is killed.
+        run: go test ./... -v -race -timeout 5m -coverprofile=./cover.out
 
       - name: Check Test Coverage
         uses: vladopajic/go-test-coverage@f94bcf0d6b9fa5fb8b783830b22648f6c17475e2 # v2
