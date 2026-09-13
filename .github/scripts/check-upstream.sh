@@ -51,9 +51,19 @@ log_error() {
     # splitting one annotation into two and re-opening the forged-workflow-
     # command hole the escaping just closed. printf's format string is
     # fixed here, and %s never re-interprets its argument.
-    printf '::error::%s\n' "${msg}"
+    #
+    # `command printf` (not bare printf) everywhere in this script, the
+    # same house convention as the `command grep` further down: a bare
+    # name resolves to a shell function first, and a function can be
+    # inherited from the environment (bash imports `BASH_FUNC_printf%%`
+    # from an exported function in the parent). Such a function would own
+    # every line this script prints - including the annotation, which is
+    # the whole forgery this escaping exists to prevent - and, in the
+    # comparisons further down, the values the verdict is computed from.
+    # `command` also outranks PATH here, since it prefers the builtin.
+    command printf '::error::%s\n' "${msg}"
   else
-    printf 'ERROR: %s\n' "${msg}" >&2
+    command printf 'ERROR: %s\n' "${msg}" >&2
   fi
 }
 
@@ -65,7 +75,7 @@ write_summary() {
     # printf, not echo, for the same reason as in log_error: under
     # `shopt -s xpg_echo` echo would re-expand a literal "\n" (or any other
     # backslash escape) inside the untrusted detail this body carries.
-    printf '%s\n' "${body}" >> "${GITHUB_STEP_SUMMARY}" || true
+    command printf '%s\n' "${body}" >> "${GITHUB_STEP_SUMMARY}" || true
   fi
 }
 
@@ -203,7 +213,7 @@ label_width=$(( ${#MODULE} + 10 ))  # "Upstream " + MODULE + ":"
 if (( label_width < 16 )); then     # unless a shorter MODULE leaves
   label_width=16                    # "Newest repo tag:" as the longest
 fi
-printf '%-*s %s\n' \
+command printf '%-*s %s\n' \
   "${label_width}" "Upstream ${MODULE}:" "${upstream_version}" \
   "${label_width}" "go.mod pin:" "${pinned_version}" \
   "${label_width}" "Newest repo tag:" "${newest_tag}"
@@ -218,7 +228,7 @@ fi
 # tag_ok when newest_tag >= upstream_version, i.e. sorting the two together
 # with sort -V puts upstream_version first (or they are equal). Only these
 # two already-filtered values are ever compared here.
-smallest="$(printf '%s\n%s\n' "${newest_tag}" "${upstream_version}" | sort -V | head -n1)"
+smallest="$(command printf '%s\n%s\n' "${newest_tag}" "${upstream_version}" | sort -V | head -n1)"
 if [[ "${smallest}" != "${upstream_version}" ]]; then
   tag_ok=false
 fi
@@ -229,7 +239,7 @@ if [[ "${pin_ok}" == "true" && "${tag_ok}" == "true" ]]; then
 - Upstream \`${MODULE}\`: \`${upstream_version}\`
 - go.mod pin: \`${pinned_version}\`
 - Newest repo tag: \`${newest_tag}\`"
-  echo "OK: go.mod pin and newest tag are aligned with upstream ${upstream_version}."
+  command printf '%s\n' "OK: go.mod pin and newest tag are aligned with upstream ${upstream_version}."
   exit 0
 fi
 
@@ -241,11 +251,11 @@ if [[ "${tag_ok}" == "false" ]]; then
   reasons+=("newest repo tag is ${newest_tag}, which is older than upstream ${upstream_version} (the aligned release tag has not been cut yet).")
 fi
 
-joined="$(printf '%s\n' "${reasons[@]}")"
+joined="$(command printf '%s\n' "${reasons[@]}")"
 log_error "Upstream ${MODULE} has moved to ${upstream_version}; this repo has not caught up: ${joined}"
 write_summary "### Upstream check: FAIL
 
 Upstream \`${MODULE}\` has moved to \`${upstream_version}\`; this repo has not caught up.
 
-$(printf -- '- %s\n' "${reasons[@]}")"
+$(command printf -- '- %s\n' "${reasons[@]}")"
 exit 1

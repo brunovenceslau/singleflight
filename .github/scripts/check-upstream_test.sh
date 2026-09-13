@@ -24,16 +24,30 @@ set -euo pipefail
 export GIT_CONFIG_GLOBAL=/dev/null
 export GIT_CONFIG_SYSTEM=/dev/null
 
+# Same reasoning for the variables that steer git at a *repository*: with
+# GIT_DIR or GIT_WORK_TREE exported in the caller's environment, this
+# script's own `git init` for the first throwaway repo dies ("Cannot access
+# work tree") and not a single case runs - the developer gets no signal at
+# all rather than a failing assertion. Clearing them here cannot weaken the
+# decoy cases below, which plant these very variables: run_case rebuilds
+# the child environment from scratch with `env -i` and re-supplies whatever
+# the case asked for.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_CEILING_DIRECTORIES
+
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 script_path="${script_dir}/check-upstream.sh"
 
+# The trap is installed after the first mktemp and before the second, so a
+# failure of the second cannot leak the first. The ${work_dir:+...} guard
+# covers the window in between, where work_dir exists but is still empty.
 fake_go_dir="$(mktemp -d)"
+work_dir=""
+trap 'rm -rf "${fake_go_dir}" ${work_dir:+"${work_dir}"}' EXIT
 # Every per-case throwaway repo lives under this one directory instead of
 # its own mktemp -d, so a single EXIT trap covers all of them: an abort
 # mid-run (a failing case, Ctrl-C, whatever) still leaves nothing behind.
 work_dir="$(mktemp -d)"
 case_seq=0
-trap 'rm -rf "${fake_go_dir}" "${work_dir}"' EXIT
 
 cat > "${fake_go_dir}/go" <<'FAKE_GO'
 #!/usr/bin/env bash
@@ -41,10 +55,13 @@ cat > "${fake_go_dir}/go" <<'FAKE_GO'
 # `go list -m -f {{.Version}} <module>[@latest]` invocation the script
 # under test makes; anything else is a hard error so stub drift is loud.
 #
-# Every emission is printf, never echo: a case may run this stub under
-# `shopt -s xpg_echo` (see XPG_ECHO in run_case), where echo would expand
-# backslash escapes in the injected text and the stub would silently
-# deliver something other than what the case asked for.
+# Every emission is `command printf`, never echo and never a bare printf:
+# a case may run this stub under `shopt -s xpg_echo` (see XPG_ECHO in
+# run_case), where echo would expand backslash escapes in the injected
+# text, or with printf hijacked by an exported shell function (see
+# HIJACK_PRINTF), which the stub inherits just as the script under test
+# does. Either way the stub would silently deliver something other than
+# what the case asked for, and the case would be testing the stub.
 set -euo pipefail
 if [[ "${1:-}" == "list" && "${2:-}" == "-m" && "${3:-}" == "-f" && "${4:-}" == "{{.Version}}" ]]; then
   target="${5:-}"
@@ -52,7 +69,7 @@ if [[ "${1:-}" == "list" && "${2:-}" == "-m" && "${3:-}" == "-f" && "${4:-}" == 
     if [[ -z "${FAKE_UPSTREAM:-}" ]]; then
       # FAKE_UPSTREAM_ERR lets a test case inject arbitrary (including
       # hostile) stderr text; it defaults to a plain stub-failure message.
-      printf '%s\n' "${FAKE_UPSTREAM_ERR:-go: golang.org/x/sync@latest: module lookup disabled (stub failure: GOPROXY unreachable)}" >&2
+      command printf '%s\n' "${FAKE_UPSTREAM_ERR:-go: golang.org/x/sync@latest: module lookup disabled (stub failure: GOPROXY unreachable)}" >&2
       exit 1
     fi
     # FAKE_UPSTREAM_ERR is honoured on the success path too: a real
@@ -62,9 +79,9 @@ if [[ "${1:-}" == "list" && "${2:-}" == "-m" && "${3:-}" == "-f" && "${4:-}" == 
     # lookups instead of letting the first call's text bleed into the
     # second call's error detail.
     if [[ -n "${FAKE_UPSTREAM_ERR:-}" ]]; then
-      printf '%s\n' "${FAKE_UPSTREAM_ERR}" >&2
+      command printf '%s\n' "${FAKE_UPSTREAM_ERR}" >&2
     fi
-    printf '%s\n' "${FAKE_UPSTREAM}"
+    command printf '%s\n' "${FAKE_UPSTREAM}"
     exit 0
   else
     # EXPECTED_REPO_ROOT, when set, proves the script under test actually
@@ -73,18 +90,18 @@ if [[ "${1:-}" == "list" && "${2:-}" == "-m" && "${3:-}" == "-f" && "${4:-}" == 
     # invokes check-upstream.sh from a subdirectory only passes if the
     # script's own `cd` moved it back to the root first.
     if [[ -n "${EXPECTED_REPO_ROOT:-}" && "${PWD}" != "${EXPECTED_REPO_ROOT}" ]]; then
-      printf '%s\n' "go: golang.org/x/sync: module lookup failed (stub failure: not invoked from repo root, cwd=${PWD})" >&2
+      command printf '%s\n' "go: golang.org/x/sync: module lookup failed (stub failure: not invoked from repo root, cwd=${PWD})" >&2
       exit 1
     fi
     if [[ -z "${FAKE_PIN:-}" ]]; then
-      printf '%s\n' "go: golang.org/x/sync: missing go.sum entry (stub failure: broken go.mod)" >&2
+      command printf '%s\n' "go: golang.org/x/sync: missing go.sum entry (stub failure: broken go.mod)" >&2
       exit 1
     fi
-    printf '%s\n' "${FAKE_PIN}"
+    command printf '%s\n' "${FAKE_PIN}"
     exit 0
   fi
 fi
-printf '%s\n' "fake go: unsupported invocation: $*" >&2
+command printf '%s\n' "fake go: unsupported invocation: $*" >&2
 exit 127
 FAKE_GO
 chmod u+x "${fake_go_dir}/go"
@@ -141,14 +158,19 @@ summary_fence_count() {
 #          [MUST_NOT_CONTAIN_SUMMARY_OUTSIDE_FENCE[;...]] [FENCE_MIN_BACKTICKS] \
 #          [RUN_SUBDIR] [NO_GIT_REPO] [MUST_NOT_CONTAIN[;...]] \
 #          [MUST_NOT_CONTAIN_SUMMARY[;...]] [EXPECT_FENCE_LINES] \
-#          [GIT_ENV_DECOY_TAGS] [XPG_ECHO]
+#          [GIT_ENV_DECOY_TAGS] [XPG_ECHO] [GIT_ENV_DECOY_MODE] \
+#          [HIJACK_PRINTF]
 #
 # MUST_CONTAIN / MUST_NOT_CONTAIN are checked against the script's combined
 # stdout+stderr. GITHUB_ACTIONS is "true", "" or "unset": the empty string
 # is still a *set* variable, so only "unset" - which omits the name from
 # the environment entirely - exercises the script's `${GITHUB_ACTIONS:-}`
-# guard under `set -u`. WANT_SUMMARY ("true"/"false"/"unset"/"unwritable")
-# threads a per-case GITHUB_STEP_SUMMARY file through the run ("unset"
+# guard under `set -u`. SINGLE_ERROR_LINE is "true" (exactly one
+# ::error:: line and exactly one line starting with "::") or "none" (not a
+# single one of either), the latter for the non-Actions branch, which must
+# never emit anything annotation-shaped. WANT_SUMMARY
+# ("true"/"false"/"unset"/"unwritable") threads a per-case
+# GITHUB_STEP_SUMMARY file through the run ("unset"
 # omits the variable from the environment entirely, rather than pointing
 # it at a file; "unwritable" points it at a path under a directory that
 # does not exist, so the append fails and only the script's `|| true`
@@ -167,11 +189,14 @@ summary_fence_count() {
 # check-upstream.sh from that subdirectory of the throwaway repo instead of
 # its root. NO_GIT_REPO ("true") skips creating a git repo altogether, so
 # the throwaway directory is just a plain directory. GIT_ENV_DECOY_TAGS,
-# when set, builds a second repository carrying those tags and points
-# GIT_DIR at it, so a case can prove the script inspects the checkout it
-# is standing in rather than whatever the environment steers git at.
+# when set, builds a second repository carrying those tags and points the
+# GIT_ENV_DECOY_MODE variable ("GIT_DIR", the default, or "GIT_WORK_TREE")
+# at it, so a case can prove the script inspects the checkout it is
+# standing in rather than whatever the environment steers git at.
 # XPG_ECHO ("true") starts the script under `shopt -s xpg_echo`, where the
-# `echo` builtin expands backslash escapes.
+# `echo` builtin expands backslash escapes. HIJACK_PRINTF ("true") exports
+# a shell function named printf into the run, which bash imports and which
+# a bare `printf` would resolve to ahead of the builtin.
 #
 # Two assertions are unconditional rather than parameterised, because they
 # should hold for every case: a WANT_SUMMARY=true file is pre-seeded with a
@@ -189,6 +214,7 @@ run_case() {
   local run_subdir="${16:-}" no_git_repo="${17:-false}" must_not_contain="${18:-}"
   local must_not_contain_summary="${19:-}" expect_fence_lines="${20:-}"
   local git_env_decoy_tags="${21:-}" xpg_echo="${22:-false}"
+  local git_env_decoy_mode="${23:-GIT_DIR}" hijack_printf="${24:-false}"
 
   case_seq=$((case_seq + 1))
   local tmp_repo="${work_dir}/case-${case_seq}"
@@ -208,13 +234,19 @@ run_case() {
   fi
 
   # A second, unrelated repository whose tags are planted to look aligned,
-  # pointed at by GIT_DIR. git resolves which repository to operate on from
-  # the environment before it looks at the working directory, so unless the
-  # script under test clears the GIT_* steering variables, this decoy's
-  # tags are what `git tag -l` reports - a forged pass with no aligned tag
-  # anywhere in the real checkout. GIT_DIR on its own does not move
-  # `git rev-parse --show-toplevel` off the current directory, so the only
-  # thing this changes is which tag set the check sees.
+  # pointed at by one of the GIT_* steering variables. git resolves which
+  # repository to operate on from the environment before it looks at the
+  # working directory, so unless the script under test clears those
+  # variables, this decoy's tags are what `git tag -l` reports - a forged
+  # pass with no aligned tag anywhere in the real checkout. The two
+  # variables get there by different routes, which is why both are worth a
+  # case: GIT_DIR leaves the working directory alone and only swaps the tag
+  # store, while GIT_WORK_TREE moves `git rev-parse --show-toplevel` onto
+  # the decoy, so the script `cd`s into it and reads its tags from there.
+  # The other four the script clears (GIT_COMMON_DIR, GIT_INDEX_FILE,
+  # GIT_OBJECT_DIRECTORY, GIT_CEILING_DIRECTORIES) are inert for these two
+  # git calls - clearing them is still right, but a case for them would
+  # assert nothing.
   local decoy_git_dir=""
   if [[ -n "${git_env_decoy_tags}" ]]; then
     local decoy_repo="${work_dir}/decoy-${case_seq}"
@@ -225,7 +257,19 @@ run_case() {
     for decoy_tag in ${git_env_decoy_tags}; do
       git -C "${decoy_repo}" -c tag.gpgsign=false tag "${decoy_tag}"
     done
-    decoy_git_dir="${decoy_repo}/.git"
+    if [[ "${git_env_decoy_mode}" == "GIT_WORK_TREE" ]]; then
+      decoy_git_dir="${decoy_repo}"
+      # The stub's "was I called from the repo root?" check has to stand
+      # down for this one: the attack's whole point is to move the script's
+      # working directory, so with the hardening removed the stub would
+      # abort the pin lookup and mask the forged PASS behind a stub
+      # failure. Leaving it off makes the unhardened outcome the real one
+      # (rc=0, decoy tag reported as aligned); the `cd` behaviour itself is
+      # covered by the run-from-a-subdirectory case.
+      repo_root_real=""
+    else
+      decoy_git_dir="${decoy_repo}/.git"
+    fi
   fi
 
   local invoke_dir="${tmp_repo}"
@@ -265,7 +309,13 @@ run_case() {
 
   local env_args=(
     PATH="${fake_go_dir}:${PATH}"
-    HOME="${HOME}"
+    # A caller can legitimately have no HOME (this suite run under
+    # `env -i`, a minimal container): under `set -u` a bare ${HOME} would
+    # abort the whole run before the first case, which is the same
+    # no-signal-at-all failure the GIT_* unset above exists to prevent.
+    # The throwaway work_dir is a real, writable stand-in; git never reads
+    # a config out of it anyway, GIT_CONFIG_GLOBAL being /dev/null.
+    HOME="${HOME:-${work_dir}}"
     GIT_CONFIG_GLOBAL="${GIT_CONFIG_GLOBAL}"
     GIT_CONFIG_SYSTEM="${GIT_CONFIG_SYSTEM}"
     FAKE_UPSTREAM="${upstream}"
@@ -275,7 +325,7 @@ run_case() {
     TMPDIR="${case_tmp}"
   )
   if [[ -n "${decoy_git_dir}" ]]; then
-    env_args+=("GIT_DIR=${decoy_git_dir}")
+    env_args+=("${git_env_decoy_mode}=${decoy_git_dir}")
   fi
   # bash enables every shell option named in BASHOPTS before it reads the
   # script, so this is a caller-controlled setting the script cannot see
@@ -285,6 +335,14 @@ run_case() {
   # annotation escaping has already run.
   if [[ "${xpg_echo}" == "true" ]]; then
     env_args+=("BASHOPTS=xpg_echo")
+  fi
+  # bash imports a function definition from any environment entry named
+  # BASH_FUNC_<name>%%, so an exported function in whatever invoked the
+  # workflow step becomes a function of that name inside the script. This
+  # one answers every call with a forged annotation line, which is what a
+  # bare `printf` would run instead of the builtin.
+  if [[ "${hijack_printf}" == "true" ]]; then
+    env_args+=('BASH_FUNC_printf%%=() { builtin printf "::error::FORGED-BY-EXPORTED-FUNCTION\n"; }')
   fi
   if [[ "${gha}" != "unset" ]]; then
     env_args+=("GITHUB_ACTIONS=${gha}")
@@ -335,17 +393,21 @@ run_case() {
     IFS="${saved_ifs4}"
   fi
 
-  if [[ "${single_error_line}" == "true" ]]; then
+  if [[ "${single_error_line}" == "true" || "${single_error_line}" == "none" ]]; then
+    local expected_error_lines=1
+    if [[ "${single_error_line}" == "none" ]]; then
+      expected_error_lines=0
+    fi
     local error_lines colon_lines
     error_lines="$(printf '%s\n' "${output}" | command grep -c '^::error::' || true)"
     colon_lines="$(printf '%s\n' "${output}" | command grep -c '^::' || true)"
-    if [[ "${error_lines}" -ne 1 ]]; then
+    if [[ "${error_lines}" -ne "${expected_error_lines}" ]]; then
       ok=false
-      reason="${reason} error-lines=${error_lines} expected=1"
+      reason="${reason} error-lines=${error_lines} expected=${expected_error_lines}"
     fi
-    if [[ "${colon_lines}" -ne 1 ]]; then
+    if [[ "${colon_lines}" -ne "${expected_error_lines}" ]]; then
       ok=false
-      reason="${reason} colon-lines=${colon_lines} expected=1"
+      reason="${reason} colon-lines=${colon_lines} expected=${expected_error_lines}"
     fi
   fi
 
@@ -683,6 +745,21 @@ run_case "inherited GIT_DIR cannot forge the tag verdict" \
   "" "" \
   "v9.9.9"
 
+# The same forgery by the other route. GIT_WORK_TREE does not swap the tag
+# store directly - it moves what `git rev-parse --show-toplevel` reports,
+# so the script `cd`s into the decoy and reads its tags from there. Without
+# the unset this run reports the decoy's v9.9.9 as the newest tag and exits
+# 0; the real checkout's v0.22.0 must be what shows up in the reason
+# instead, and v9.9.9 must appear nowhere in the output.
+run_case "inherited GIT_WORK_TREE cannot forge the tag verdict" \
+  "v0.23.0" "v0.23.0" "v0.22.0" 1 \
+  "newest repo tag is v0.22.0, which is older than upstream v0.23.0" "" "false" \
+  "false" "" "false" "" "false" "" "" \
+  "" "" "v9.9.9" \
+  "" "" \
+  "v9.9.9" "false" \
+  "GIT_WORK_TREE"
+
 # Same hostile stderr as the escaping case above, but carrying a literal
 # two-character "\n" and run under xpg_echo. The escaping pass cannot help
 # here - it never sees a newline - so the only thing keeping the forged
@@ -699,6 +776,51 @@ run_case "xpg_echo cannot re-expand escapes in untrusted text" \
   "" "" "" \
   "" "2" \
   "" "true"
+
+# The other branch of log_error, which a case with GITHUB_ACTIONS set can
+# never reach. Plain stderr is not annotation-shaped, so nothing here may
+# start with "::" at all - SINGLE_ERROR_LINE="none" is the assertion for
+# that, and the payload has to stay on the single line it arrived on.
+run_case "xpg_echo cannot split the plain stderr message either" \
+  "" "v0.22.0" "v0.22.0" 1 \
+  "ERROR: Could not determine the latest published version;warning: a\n::add-mask::PWNED" "unset" "none" \
+  "false" "" "false" \
+  "warning: a\n::add-mask::PWNED" \
+  "false" "" "" \
+  "" "" "" \
+  "" "" \
+  "" "true"
+
+# An exported shell function named printf, imported by bash from
+# BASH_FUNC_printf%% in the environment, answers every call with a forged
+# annotation. A bare `printf` resolves to it ahead of the builtin, so with
+# one this run would print nothing but forged lines - not only in the
+# annotation and the summary, but in the comparisons the verdict is built
+# from. `command printf` is what keeps the real message, the real reasons
+# and the real exit code intact.
+run_case "an exported printf function cannot hijack the output" \
+  "v0.23.0" "v0.22.0" "v0.22.0" 1 \
+  "::error::Upstream golang.org/x/sync has moved to v0.23.0;go.mod pins golang.org/x/sync@v0.22.0;newest repo tag is v0.22.0" "true" "true" \
+  "true" "### Upstream check: FAIL;- newest repo tag is v0.22.0" "false" "" "false" "" "" \
+  "" "" "FORGED-BY-EXPORTED-FUNCTION" \
+  "FORGED-BY-EXPORTED-FUNCTION" "" \
+  "" "false" \
+  "GIT_DIR" "true"
+
+# The same hijack against the PASS path, which is where it does the real
+# damage: the verdict itself is computed through printf (the two versions
+# are sorted by piping them into `sort -V`), so a hijacked one turns an
+# aligned repo into a spurious alarm - and, with a less blunt function
+# than this one, an unaligned repo into a pass. Nothing forged may reach
+# the operator log, the summary or the exit code.
+run_case "an exported printf function cannot forge the verdict" \
+  "v0.22.0" "v0.22.0" "v0.22.0" 0 \
+  "OK: go.mod pin and newest tag are aligned;Newest repo tag:            v0.22.0" "true" "none" \
+  "true" "### Upstream check: PASS" "false" "" "false" "" "" \
+  "" "" "FORGED-BY-EXPORTED-FUNCTION" \
+  "FORGED-BY-EXPORTED-FUNCTION" "" \
+  "" "false" \
+  "GIT_DIR" "true"
 
 # The script caps the untrusted detail at 4096 characters rather than
 # trusting the Go toolchain to keep its stderr short. 5000 characters of
