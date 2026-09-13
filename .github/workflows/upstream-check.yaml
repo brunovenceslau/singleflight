@@ -6,28 +6,70 @@ name: Upstream check
 # Versioning"), and the generic wrapper must mirror any upstream API change;
 # a failing scheduled run is GitHub's own notification to the repo owner
 # that catch-up work is needed. See .github/scripts/check-upstream.sh for
-# the exact comparisons and the fail-closed rules.
+# the exact comparisons and the fail-closed rules, and
+# .github/scripts/check-upstream_test.sh for the self-test that exercises
+# the gate itself (run as the "selftest" job below).
 #
 # Caveat: GitHub disables scheduled workflows after 60 days of repository
 # inactivity. If the alarm silently stops firing, re-enable it from the
 # Actions tab (Actions -> Upstream check -> "Enable workflow").
+#
+# Caveat: GitHub sends the failed-scheduled-run notification email to the
+# account that last modified the `schedule:` cron line on the default
+# branch - re-check who owns this alarm after anyone other than the repo
+# owner edits it.
 
 on:
   schedule:
-    - cron: '0 9 * * 1' # Mondays at 09:00 UTC
+    # 09:17 UTC, not the top of the hour: on-the-hour cron slots are the
+    # most contended on GitHub Actions, and scheduled runs landing there get
+    # delayed or silently dropped under load.
+    - cron: '17 9 * * 1' # Mondays at 09:17 UTC
   workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/scripts/check-upstream.sh'
+      - '.github/scripts/check-upstream_test.sh'
+      - '.github/workflows/upstream-check.yaml'
 
 permissions:
   contents: read
 
 jobs:
+  # Exercises the gate itself against a stubbed `go` and throwaway git
+  # repos, so a change to check-upstream.sh is validated before the weekly
+  # job ever trusts it. Runs on pull_request (via the paths filter above);
+  # the weekly/dispatch run below depends on it passing.
+  selftest:
+    name: Self-test the upstream check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Shellcheck
+        run: shellcheck .github/scripts/check-upstream.sh .github/scripts/check-upstream_test.sh
+
+      - name: Run self-test
+        run: .github/scripts/check-upstream_test.sh
+
   check:
     name: Check upstream version
+    needs: selftest
+    # PRs only need the self-test above to validate a change to the gate;
+    # the real check runs on the weekly schedule and on manual dispatch,
+    # once selftest has proven the gate itself is trustworthy.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -35,4 +77,9 @@ jobs:
           check-latest: true
 
       - name: Check upstream golang.org/x/sync version
+        env:
+          # No toolchain auto-download triggered by a proxy response, and
+          # the script can never mutate go.mod/go.sum.
+          GOTOOLCHAIN: local
+          GOFLAGS: -mod=readonly
         run: .github/scripts/check-upstream.sh
